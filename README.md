@@ -63,19 +63,19 @@ A directory becomes an Atlantis project when all of the following hold:
    library module should not;
 3. nothing else in the repository references it as a module `source` — being called by
    another module makes it a library, not a root;
-4. it passes `projects.include` and `projects.exclude`.
+4. it passes `projects.include` and `projects.exclude` (config values, see below).
 
 Everything else in the repository is still scanned, because a library module that is not a
 project can still be a *dependency* of one.
 
-Only `module` and `provider` blocks are parsed. Everything else in the configuration is
-ignored.
+Only `module` and `provider` blocks are parsed. Everything else in the Terraform configuration
+is ignored.
 
 ## How `when_modified` is built
 
 For each project, the generated patterns are controlled by two config variables:
 
-- the `when_modified.self` patterns, verbatim; then
+- the `when_modified.self` patterns; then
 - for every directory in the project's **full transitive dependency closure**, the
   `when_modified.dependency` patterns prefixed with the relative path to that directory.
 

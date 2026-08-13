@@ -1,0 +1,9 @@
+version: 3
+projects:
+  - name: envs/prod
+    dir: envs/prod
+    terraform_version: 1.11.1
+    autoplan:
+      when_modified:
+        - '**'
+        - ../../modules/local/**

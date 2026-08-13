@@ -1,0 +1,27 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+
+  settings:
+    errcheck:
+      # Writes to stderr and to in-memory buffers are diagnostics. A failed
+      # write to a closed stderr must not change the exit code of an otherwise
+      # successful generation, and there is nothing useful to do about it.
+      # Writes to the real output are checked, because those we do care about.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]

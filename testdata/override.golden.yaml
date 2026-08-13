@@ -1,0 +1,10 @@
+version: 3
+projects:
+  - name: envs/a/b
+    dir: envs/a/b
+    terraform_version: 1.11.1
+    autoplan:
+      when_modified:
+        - '**'
+        - ../../../common/**
+        - ../../../modules/common/**

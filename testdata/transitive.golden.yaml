@@ -1,0 +1,11 @@
+version: 3
+projects:
+  - name: envs/prod
+    dir: envs/prod
+    terraform_version: 1.11.1
+    autoplan:
+      when_modified:
+        - '**'
+        - ../../modules/lib_a/**
+        - ../../modules/lib_b/**
+        - ../../modules/lib_c/**

@@ -1,0 +1,18 @@
+version: 3
+parallel_plan: true
+parallel_apply: true
+projects:
+  - name: ./envs/dev
+    dir: ./envs/dev
+    terraform_version: 1.11.1
+    autoplan:
+      when_modified:
+        - '**'
+        - ../../modules/vpc/**
+  - name: ./envs/prod
+    dir: ./envs/prod
+    terraform_version: 1.11.1
+    autoplan:
+      when_modified:
+        - '**'
+        - ../../modules/vpc/**

@@ -1,0 +1,15 @@
+- id: atlantis-config
+  name: Generate atlantis.yaml
+  description: Regenerate atlantis.yaml from the Terraform module dependency graph.
+  language: golang
+  entry: atlantis-config-generator
+  args: ["--output", "atlantis.yaml", "."]
+  pass_filenames: false
+
+- id: atlantis-config-check
+  name: Check atlantis.yaml is up to date
+  description: Fail if atlantis.yaml does not match the dependency graph.
+  language: golang
+  entry: atlantis-config-generator
+  args: ["--check", "--output", "atlantis.yaml", "."]
+  pass_filenames: false

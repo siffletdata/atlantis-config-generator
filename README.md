@@ -68,16 +68,18 @@ A directory becomes an Atlantis project when all of the following hold:
 Everything else in the repository is still scanned, because a library module that is not a
 project can still be a *dependency* of one.
 
-Only `module` and `provider` blocks are parsed. Everything else in the Terraform configuration
-is ignored.
+Only `module` and `provider` blocks, and calls to file-reading functions (see below), are
+parsed. Everything else in the Terraform configuration is ignored.
 
 ## How `when_modified` is built
 
-For each project, the generated patterns are controlled by two config variables:
+For each project, the generated patterns are:
 
 - the `when_modified.self` patterns; then
 - for every directory in the project's **full transitive dependency closure**, the
-  `when_modified.dependency` patterns prefixed with the relative path to that directory.
+  `when_modified.dependency` patterns prefixed with the relative path to that directory;
+- finally, every file read from outside a module (see
+  [below](#files-read-outside-a-module)).
 
 With the defaults (`["**"]` for both) a project that depends on `modules/a`, which depends
 on `modules/b`, gets:
@@ -93,6 +95,42 @@ autoplan:
 Atlantis joins each pattern onto the project directory and matches with Docker's
 `.dockerignore` syntax, so `../../modules/b/**` resolves to `modules/b/**` against the
 repository root.
+
+### Files read outside a module
+
+A module that reads a file from elsewhere in the repository depends on that file:
+
+```hcl
+manifest = yamldecode(file("${path.module}/../../../tools/operator/crd.yml"))
+```
+
+Calls to `file`, `templatefile`, `filebase64`, `filemd5`, `filesha1`, `filesha256`,
+`filesha512`, `filebase64sha256`, `filebase64sha512` and `fileset` are found anywhere in a
+module. When the path points outside the module's directory, it is added, relative to
+the project directory, to the `when_modified` of every project that has the module in its
+dependencies:
+
+```yaml
+    - ../../../tools/operator/crd.yml
+```
+
+`fileset(dir, pattern)` contributes `dir/pattern` (or `dir/**` when the pattern uses
+`{a,b}` alternatives, which Atlantis's matcher does not support).
+
+#### Limitations
+
+Paths are evaluated statically, with `path.module` as the only known variable. When a
+string template uses anything else, such as `each.key` or a variable, the directory named by
+its static start is watched instead:
+
+```hcl
+manifest = yamldecode(file("${path.module}/../crds/${each.key}.yml"))  # → ../crds/**
+```
+
+Paths with no static directory (`file(var.path)`, `"${path.root}/x"`, or a path built with
+another function) are skipped, as are `.tf.json` files and paths outside the repository. A path without `path.module` is resolved against the module's own
+directory, which is what Terraform does for a root module. A referenced file that does not
+exist is reported as a warning and skipped.
 
 ## Configuration
 

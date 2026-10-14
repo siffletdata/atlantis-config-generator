@@ -1,21 +1,26 @@
 // Package tfparse extracts the minimum amount of information the dependency
 // graph needs out of a Terraform/OpenTofu directory: which modules it calls,
-// whether it declares any providers, and which of its files are symlinks.
+// whether it declares any providers, which of its files are symlinks, and which
+// files it reads through functions such as file() and templatefile().
 //
-// It deliberately understands only "module" and "provider" blocks. Everything
-// else in the configuration is ignored, which keeps the parser robust against
-// syntax it has no opinion about.
+// It deliberately understands only "module" and "provider" blocks, plus calls
+// to the file-reading functions wherever they appear. Everything else in the
+// configuration is ignored, which keeps the parser robust against syntax it
+// has no opinion about.
 package tfparse
 
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -33,6 +38,12 @@ type Dir struct {
 	// the directory, relative to the repository root. A change to the target
 	// is a change to this directory.
 	Symlinks []string
+	// FileRefs holds the paths read by file-reading function calls, relative
+	// to the module directory, sorted. A fileset() call contributes its path
+	// and pattern joined, so an entry may be a glob. Only arguments that can
+	// be evaluated statically, with path.module as the sole variable, are
+	// recorded.
+	FileRefs []string
 }
 
 // ModuleLabels returns the module labels in a stable order.
@@ -108,6 +119,8 @@ func ParseDir(fsRoot, dir string, warn Warner) (*Dir, error) {
 	}
 
 	result.Symlinks = SymlinkTargets(fsRoot, dir, warn)
+	sort.Strings(result.FileRefs)
+	result.FileRefs = slices.Compact(result.FileRefs)
 
 	return result, nil
 }
@@ -167,6 +180,12 @@ func parseFile(parser *hclparse.Parser, abs, rel string, result *Dir, warn Warne
 		return
 	}
 
+	// JSON configuration embeds expressions in plain strings, which are not
+	// worth interpreting here; only native syntax is searched for file reads.
+	if body, ok := file.Body.(*hclsyntax.Body); ok {
+		result.FileRefs = append(result.FileRefs, fileRefs(body)...)
+	}
+
 	content, _, diags := file.Body.PartialContent(bodySchema)
 	if diags.HasErrors() {
 		warn("%s: %s", rel, diags.Error())
@@ -212,6 +231,120 @@ func moduleSource(block *hcl.Block, rel string, warn Warner) (string, bool) {
 		return "", false
 	}
 	return value.AsString(), true
+}
+
+// fileFunctions are the functions whose first argument is a path the module
+// reads. fileset is handled separately, since it takes a pattern as well.
+var fileFunctions = map[string]bool{
+	"file":             true,
+	"filebase64":       true,
+	"filebase64sha256": true,
+	"filebase64sha512": true,
+	"filemd5":          true,
+	"filesha1":         true,
+	"filesha256":       true,
+	"filesha512":       true,
+	"templatefile":     true,
+}
+
+// pathModuleContext evaluates path arguments with path.module set to the
+// module directory itself, so "${path.module}/../x" comes out as "./../x".
+// path.root and path.cwd are left undefined: they name the root module the
+// configuration is eventually run from, which a library module cannot know.
+var pathModuleContext = &hcl.EvalContext{
+	Variables: map[string]cty.Value{
+		"path": cty.ObjectVal(map[string]cty.Value{"module": cty.StringVal(".")}),
+	},
+}
+
+// fileRefs returns the paths read by file-reading function calls anywhere in
+// body, relative to the module directory.
+//
+// A path that depends on anything other than path.module, such as
+// "${path.module}/../crds/${each.key}.yml", cannot be resolved statically. When
+// its leading directories are static, the whole directory they name is
+// recorded instead ("../crds/**"), which is broader than needed but never
+// misses a change. Paths with no static directory at all are skipped: they are
+// routine, so reporting them would be noise.
+func fileRefs(body *hclsyntax.Body) []string {
+	var refs []string
+	_ = hclsyntax.VisitAll(body, func(node hclsyntax.Node) hcl.Diagnostics {
+		call, ok := node.(*hclsyntax.FunctionCallExpr)
+		if !ok {
+			return nil
+		}
+		name := strings.TrimPrefix(call.Name, "core::")
+		switch {
+		case fileFunctions[name] && len(call.Args) >= 1:
+			if ref, ok := staticPath(call.Args[0]); ok {
+				refs = append(refs, ref)
+			} else if dir, ok := staticDirPrefix(call.Args[0]); ok {
+				refs = append(refs, path.Join(dir, "**"))
+			}
+		case name == "fileset" && len(call.Args) == 2:
+			dir, ok := staticPath(call.Args[0])
+			if !ok {
+				if dir, ok := staticDirPrefix(call.Args[0]); ok {
+					refs = append(refs, path.Join(dir, "**"))
+				}
+				return nil
+			}
+			pattern, ok := staticPath(call.Args[1])
+			// Brace alternatives have no equivalent in the .dockerignore
+			// syntax Atlantis matches with; fall back to the whole directory.
+			if !ok || strings.ContainsAny(pattern, "{}") {
+				pattern = "**"
+			}
+			refs = append(refs, path.Join(dir, pattern))
+		}
+		return nil
+	})
+	return refs
+}
+
+// staticPath evaluates expr as a relative path, or reports false when it
+// depends on more than path.module or is absolute.
+func staticPath(expr hclsyntax.Expression) (string, bool) {
+	value, diags := expr.Value(pathModuleContext)
+	if diags.HasErrors() || value.IsNull() || !value.IsKnown() || value.Type() != cty.String {
+		return "", false
+	}
+	return relativePath(value.AsString())
+}
+
+// relativePath cleans a path read from configuration, rejecting empty and
+// absolute ones.
+func relativePath(p string) (string, bool) {
+	p = filepath.ToSlash(p)
+	if p == "" || path.IsAbs(p) || filepath.IsAbs(p) {
+		return "", false
+	}
+	return path.Clean(p), true
+}
+
+// staticDirPrefix returns the directory named by the static start of a string
+// template, for a template that cannot be evaluated as a whole. Evaluation
+// stops at the first part that depends on more than path.module, and the
+// result keeps only the complete directory segments before it: for
+// "${path.module}/../x/file-${var.n}.yml" that is "../x".
+func staticDirPrefix(expr hclsyntax.Expression) (string, bool) {
+	template, ok := expr.(*hclsyntax.TemplateExpr)
+	if !ok {
+		return "", false
+	}
+	var prefix strings.Builder
+	for _, part := range template.Parts {
+		value, diags := part.Value(pathModuleContext)
+		if diags.HasErrors() || value.IsNull() || !value.IsKnown() || value.Type() != cty.String {
+			break
+		}
+		prefix.WriteString(value.AsString())
+	}
+	i := strings.LastIndex(prefix.String(), "/")
+	if i < 0 {
+		return "", false
+	}
+	return relativePath(prefix.String()[:i])
 }
 
 func isTerraformFile(name string) bool {

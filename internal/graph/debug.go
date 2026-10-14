@@ -45,6 +45,12 @@ func (g *Graph) WriteTree(w io.Writer) error {
 			return nil
 		}
 
+		for _, file := range node.Files {
+			if _, err := fmt.Fprintf(w, "%s  %s (file)\n", indent, file); err != nil {
+				return err
+			}
+		}
+
 		onPath[key] = true
 		defer delete(onPath, key)
 

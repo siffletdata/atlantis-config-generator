@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -307,5 +308,39 @@ module "gone" { source = "../../modules/gone" }`,
 	}
 	if got := g.Dependencies("envs/prod"); len(got) != 0 {
 		t.Errorf("Dependencies = %v, want none", got)
+	}
+}
+
+// TestBuildRecordsExternalFiles checks that files read from outside a module
+// directory are recorded, and reach the roots that depend on the module.
+func TestBuildRecordsExternalFiles(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"envs/prod/main.tf": `provider "aws" {}
+module "k8s" { source = "../../modules/k8s" }
+locals { own = file("${path.module}/values.yaml") }`,
+		"envs/prod/values.yaml": "x: 1",
+		"modules/k8s/main.tf": `locals {
+  crd     = file("${path.module}/../../tools/crd.yml")
+  inside  = file("${path.module}/files/a.txt")
+  missing = file("${path.module}/../../tools/missing.yml")
+  escape  = file("${path.module}/../../../outside.txt")
+}`,
+		"modules/k8s/files/a.txt": "a",
+		"tools/crd.yml":           "kind: CustomResourceDefinition",
+	})
+
+	g := build(t, root)
+
+	if want := []string{"tools/crd.yml"}; !reflect.DeepEqual(g.Nodes["modules/k8s"].Files, want) {
+		t.Errorf("modules/k8s Files = %v, want %v", g.Nodes["modules/k8s"].Files, want)
+	}
+	if got := g.Nodes["envs/prod"].Files; len(got) != 0 {
+		t.Errorf("envs/prod Files = %v, want none: its file is inside the directory", got)
+	}
+	if want := []string{"tools/crd.yml"}; !reflect.DeepEqual(g.Files("envs/prod"), want) {
+		t.Errorf("Files(envs/prod) = %v, want %v", g.Files("envs/prod"), want)
+	}
+	if !slices.ContainsFunc(g.Warnings, func(w string) bool { return strings.Contains(w, "tools/missing.yml") }) {
+		t.Errorf("expected a warning about the missing file, got %v", g.Warnings)
 	}
 }

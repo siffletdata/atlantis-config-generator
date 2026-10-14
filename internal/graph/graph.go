@@ -55,6 +55,11 @@ type Node struct {
 	// SymlinkDeps is the subset of Deps that came from a symlinked file rather
 	// than a module block. Recorded for the debug output.
 	SymlinkDeps map[string]bool
+	// Files are repo-relative paths outside this directory that its
+	// configuration reads with file(), templatefile() and the like, sorted.
+	// An entry may be a glob when it comes from fileset(). Files inside the
+	// directory are left out: they are already part of the directory.
+	Files []string
 }
 
 // Graph is the whole dependency graph, keyed by Node.Key.
@@ -191,6 +196,8 @@ func Build(opts Options) (*Graph, error) {
 			queue = append(queue, target)
 		}
 
+		node.Files = externalFiles(opts.Root, dir, result.FileRefs, warn)
+
 		// A symlinked file makes this directory depend on the directory the
 		// link points into, since that is where a diff records the change.
 		for _, target := range result.Symlinks {
@@ -220,6 +227,49 @@ func resolveSource(fromDir, source string) (target string, local bool) {
 	// path.Join cleans the result, collapsing the stray double separators that
 	// appear in sources like "../../modules//database".
 	return path.Join(fromDir, source), true
+}
+
+// externalFiles resolves file references against dir and keeps those that
+// point outside it but still inside the repository: a change to one of those
+// files changes what the module does, yet no pattern covering the module
+// directory would notice.
+func externalFiles(root, dir string, refs []string, warn func(string, ...any)) []string {
+	var files []string
+	for _, ref := range refs {
+		target := path.Join(dir, ref)
+		if target == dir || strings.HasPrefix(target, dir+"/") {
+			continue
+		}
+		if target == ".." || strings.HasPrefix(target, "../") {
+			// Outside the repository; nothing in a diff can match it.
+			continue
+		}
+		if !hasGlobMeta(target) {
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(target))); err != nil {
+				warn("%s: reads %s, which does not exist", dir, target)
+				continue
+			}
+		}
+		files = append(files, target)
+	}
+	return files
+}
+
+func hasGlobMeta(p string) bool {
+	return strings.ContainsAny(p, "*?[")
+}
+
+// Files returns the external files read by key and by every local node it
+// depends on, sorted and deduplicated.
+func (g *Graph) Files(key string) []string {
+	var out []string
+	for _, k := range append([]string{key}, g.Dependencies(key)...) {
+		if node, ok := g.Nodes[k]; ok {
+			out = append(out, node.Files...)
+		}
+	}
+	sort.Strings(out)
+	return slices.Compact(out)
 }
 
 // node returns the node for key, creating it if needed.

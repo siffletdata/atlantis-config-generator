@@ -314,3 +314,44 @@ func TestParseDirTofuAndJSON(t *testing.T) {
 		t.Errorf(".tf.json module: got %q, warnings %v", got, warnings)
 	}
 }
+
+func TestParseDirFileRefs(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"mod/main.tf": `
+resource "kubernetes_manifest" "crd" {
+  manifest = yamldecode(file(
+    "${path.module}/../../tools/crd.yml")
+  )
+}
+
+locals {
+  values  = templatefile("${path.module}/templates/values.tpl", { x = 1 })
+  plain   = file("../shared/plain.txt")
+  hash    = filesha256("${path.module}/../shared/script.sh")
+  core    = core::file("${path.module}/../shared/core.txt")
+  dynamic = file(var.path)
+  root    = file("${path.root}/x")
+  abs     = file("/etc/hosts")
+  globbed = fileset("${path.module}/../policies", "*.json")
+  braces  = fileset("${path.module}/../braces", "{a,b}.json")
+  again   = file("${path.module}/../../tools/crd.yml")
+}
+`,
+		"mod/data.tf.json": `{"locals": {"json": "${file(\"../json/ignored.txt\")}"}}`,
+	})
+
+	result, _ := parse(t, root, "mod")
+
+	want := []string{
+		"../../tools/crd.yml",
+		"../braces/**",
+		"../policies/*.json",
+		"../shared/core.txt",
+		"../shared/plain.txt",
+		"../shared/script.sh",
+		"templates/values.tpl",
+	}
+	if !reflect.DeepEqual(result.FileRefs, want) {
+		t.Errorf("file refs:\n got %#v\nwant %#v", result.FileRefs, want)
+	}
+}

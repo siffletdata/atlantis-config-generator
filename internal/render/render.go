@@ -172,7 +172,9 @@ func buildProject(cfg *config.Config, g *graph.Graph, dir, terraformVersion stri
 }
 
 // whenModified builds the autoplan patterns: the self patterns first, then one
-// group per transitive dependency, ordered by dependency path.
+// group per transitive dependency, ordered by dependency path, then every file
+// outside those directories that the project or a dependency reads with
+// file(), templatefile() and the like.
 //
 // Atlantis prepends the project directory to each pattern and matches with
 // Docker's .dockerignore syntax, so "../../modules/foo/**" resolves to
@@ -201,6 +203,15 @@ func whenModified(cfg *config.Config, g *graph.Graph, dir string) []string {
 			seen[joined] = true
 			patterns = append(patterns, joined)
 		}
+	}
+
+	for _, file := range g.Files(dir) {
+		rel, err := relPath(dir, file)
+		if err != nil || seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		patterns = append(patterns, rel)
 	}
 
 	return patterns

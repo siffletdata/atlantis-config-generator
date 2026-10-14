@@ -7,4 +7,5 @@ projects:
       when_modified:
         - '**'
         - ../../tf_modules/kubernetes/**
+        - ../../../tools/operator/crds/**
         - ../../../tools/operator/manifests/crd.yml

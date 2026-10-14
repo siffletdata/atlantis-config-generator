@@ -119,10 +119,16 @@ dependencies:
 
 #### Limitations
 
-Only paths that can be evaluated statically are followed: string literals and templates
-whose only variable is `path.module`. Paths built from variables, locals, `path.root` or
-`path.cwd`, or other functions are skipped, as are `.tf.json` files and paths
-outside the repository. A path without `path.module` is resolved against the module's own
+Paths are evaluated statically, with `path.module` as the only known variable. When a
+string template uses anything else, such as `each.key` or a variable, the directory named by
+its static start is watched instead:
+
+```hcl
+manifest = yamldecode(file("${path.module}/../crds/${each.key}.yml"))  # → ../crds/**
+```
+
+Paths with no static directory (`file(var.path)`, `"${path.root}/x"`, or a path built with
+another function) are skipped, as are `.tf.json` files and paths outside the repository. A path without `path.module` is resolved against the module's own
 directory, which is what Terraform does for a root module. A referenced file that does not
 exist is reported as a warning and skipped.
 

@@ -183,12 +183,17 @@ module "k8s" { source = "../../tf_modules/kubernetes" }`,
     "${path.module}/../../../tools/operator/manifests/crd.yml")
   )
 }
+resource "kubernetes_manifest" "crds" {
+  for_each = toset(["user", "token"])
+  manifest = yamldecode(file("${path.module}/../../../tools/operator/crds/${each.key}.yml"))
+}
 locals {
   values = templatefile("${path.module}/values.tpl", {})
 }`,
 			"provisioning/tf_modules/kubernetes/values.tpl": "x",
 			"tools/operator/manifests/crd.yml":              "kind: CustomResourceDefinition",
 			"tools/operator/manifests/other.yml":            "kind: Deployment",
+			"tools/operator/crds/user.yml":                  "kind: CustomResourceDefinition",
 		},
 		config: "projects:\n  terraform_version: \"1.11.1\"\n",
 	},
@@ -345,7 +350,8 @@ func TestWhenModifiedMatchesAtlantisSemantics(t *testing.T) {
 }
 
 // TestWhenModifiedCoversFilesReadOutsideModules checks that a file a
-// dependency reads with file() selects the project, and only that file.
+// dependency reads with file() selects the project, and only that file. A path
+// built from each.key selects every file in its directory.
 func TestWhenModifiedCoversFilesReadOutsideModules(t *testing.T) {
 	f := fixtureByName(t, "file-functions")
 	cfg := parseGenerated(t, f.generate(t, f.write(t)))
@@ -358,6 +364,7 @@ func TestWhenModifiedCoversFilesReadOutsideModules(t *testing.T) {
 		{"tools/operator/manifests/crd.yml", true},
 		{"provisioning/tf_modules/kubernetes/values.tpl", true},
 		{"tools/operator/manifests/other.yml", false},
+		{"tools/operator/crds/user.yml", true},
 	}
 	for _, tc := range tests {
 		got, err := matcher.MatchesOrParentMatches(tc.changed)

@@ -258,10 +258,14 @@ var pathModuleContext = &hcl.EvalContext{
 }
 
 // fileRefs returns the paths read by file-reading function calls anywhere in
-// body, relative to the module directory. Calls whose path depends on
-// anything other than path.module, such as a variable, cannot be resolved
-// statically and are skipped: they are routine, so reporting them would be
-// noise.
+// body, relative to the module directory.
+//
+// A path that depends on anything other than path.module, such as
+// "${path.module}/../crds/${each.key}.yml", cannot be resolved statically. When
+// its leading directories are static, the whole directory they name is
+// recorded instead ("../crds/**"), which is broader than needed but never
+// misses a change. Paths with no static directory at all are skipped: they are
+// routine, so reporting them would be noise.
 func fileRefs(body *hclsyntax.Body) []string {
 	var refs []string
 	_ = hclsyntax.VisitAll(body, func(node hclsyntax.Node) hcl.Diagnostics {
@@ -274,10 +278,15 @@ func fileRefs(body *hclsyntax.Body) []string {
 		case fileFunctions[name] && len(call.Args) >= 1:
 			if ref, ok := staticPath(call.Args[0]); ok {
 				refs = append(refs, ref)
+			} else if dir, ok := staticDirPrefix(call.Args[0]); ok {
+				refs = append(refs, path.Join(dir, "**"))
 			}
 		case name == "fileset" && len(call.Args) == 2:
 			dir, ok := staticPath(call.Args[0])
 			if !ok {
+				if dir, ok := staticDirPrefix(call.Args[0]); ok {
+					refs = append(refs, path.Join(dir, "**"))
+				}
 				return nil
 			}
 			pattern, ok := staticPath(call.Args[1])
@@ -300,11 +309,42 @@ func staticPath(expr hclsyntax.Expression) (string, bool) {
 	if diags.HasErrors() || value.IsNull() || !value.IsKnown() || value.Type() != cty.String {
 		return "", false
 	}
-	ref := filepath.ToSlash(value.AsString())
-	if ref == "" || path.IsAbs(ref) || filepath.IsAbs(ref) {
+	return relativePath(value.AsString())
+}
+
+// relativePath cleans a path read from configuration, rejecting empty and
+// absolute ones.
+func relativePath(p string) (string, bool) {
+	p = filepath.ToSlash(p)
+	if p == "" || path.IsAbs(p) || filepath.IsAbs(p) {
 		return "", false
 	}
-	return path.Clean(ref), true
+	return path.Clean(p), true
+}
+
+// staticDirPrefix returns the directory named by the static start of a string
+// template, for a template that cannot be evaluated as a whole. Evaluation
+// stops at the first part that depends on more than path.module, and the
+// result keeps only the complete directory segments before it: for
+// "${path.module}/../x/file-${var.n}.yml" that is "../x".
+func staticDirPrefix(expr hclsyntax.Expression) (string, bool) {
+	template, ok := expr.(*hclsyntax.TemplateExpr)
+	if !ok {
+		return "", false
+	}
+	var prefix strings.Builder
+	for _, part := range template.Parts {
+		value, diags := part.Value(pathModuleContext)
+		if diags.HasErrors() || value.IsNull() || !value.IsKnown() || value.Type() != cty.String {
+			break
+		}
+		prefix.WriteString(value.AsString())
+	}
+	i := strings.LastIndex(prefix.String(), "/")
+	if i < 0 {
+		return "", false
+	}
+	return relativePath(prefix.String()[:i])
 }
 
 func isTerraformFile(name string) bool {

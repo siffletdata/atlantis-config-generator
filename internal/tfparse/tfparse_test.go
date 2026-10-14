@@ -335,6 +335,11 @@ locals {
   globbed = fileset("${path.module}/../policies", "*.json")
   braces  = fileset("${path.module}/../braces", "{a,b}.json")
   again   = file("${path.module}/../../tools/crd.yml")
+  each    = file("${path.module}/../crds/${each.key}.yml")
+  partial = file("${path.module}/../partial/file-${var.n}/x.yml")
+  inner   = templatefile("${path.module}/${var.name}.tpl", {})
+  rooted  = file("/etc/${var.x}")
+  fsdyn   = fileset("${path.module}/../sets/${var.env}", "*.json")
 }
 `,
 		"mod/data.tf.json": `{"locals": {"json": "${file(\"../json/ignored.txt\")}"}}`,
@@ -343,9 +348,13 @@ locals {
 	result, _ := parse(t, root, "mod")
 
 	want := []string{
+		"**",
 		"../../tools/crd.yml",
 		"../braces/**",
+		"../crds/**",
+		"../partial/**",
 		"../policies/*.json",
+		"../sets/**",
 		"../shared/core.txt",
 		"../shared/plain.txt",
 		"../shared/script.sh",
